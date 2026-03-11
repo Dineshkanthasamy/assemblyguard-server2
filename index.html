@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>AssemblyGuard Dashboard</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: 'Segoe UI', sans-serif; background:#0f1117; color:#e2e8f0; min-height:100vh; }
+
+  header { background:#1a1d27; border-bottom:1px solid #2d3148; padding:16px 28px;
+           display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:1.3rem; font-weight:700; color:#fff; }
+  header span { font-size:.8rem; color:#64748b; margin-left:auto; }
+  .dot { width:10px; height:10px; border-radius:50%; background:#22c55e;
+         box-shadow:0 0 8px #22c55e; animation:pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+          gap:20px; padding:24px 28px; }
+
+  .card { background:#1a1d27; border:1px solid #2d3148; border-radius:12px; padding:20px; }
+  .card h2 { font-size:.75rem; text-transform:uppercase; letter-spacing:.1em;
+             color:#64748b; margin-bottom:16px; }
+
+  /* Station card */
+  .station-name { font-size:1rem; font-weight:600; margin-bottom:8px; }
+  .status-badge { display:inline-block; padding:4px 12px; border-radius:20px;
+                  font-size:.75rem; font-weight:700; letter-spacing:.05em; margin-bottom:12px; }
+  .OK         { background:#14532d; color:#4ade80; }
+  .ANOMALY    { background:#7f1d1d; color:#f87171; }
+  .NO_PRODUCT { background:#1c1917; color:#a8a29e; }
+  .OFFLINE    { background:#1e1b4b; color:#818cf8; }
+
+  .stat-row { display:flex; justify-content:space-between; font-size:.82rem;
+              color:#94a3b8; margin-top:6px; }
+  .stat-row span:last-child { color:#e2e8f0; font-weight:500; }
+
+  /* Anomaly log */
+  .anomaly-list { max-height:380px; overflow-y:auto; }
+  .anomaly-item { border-left:3px solid #ef4444; padding:10px 12px;
+                  background:#12151f; border-radius:0 8px 8px 0; margin-bottom:8px; cursor:pointer; }
+  .anomaly-item:hover { background:#1a1d27; }
+  .anomaly-item .ai-station { font-size:.8rem; color:#f87171; font-weight:600; }
+  .anomaly-item .ai-detail  { font-size:.78rem; color:#94a3b8; margin-top:2px; }
+  .anomaly-item .ai-time    { font-size:.72rem; color:#475569; margin-top:4px; }
+  .no-anomalies { color:#475569; font-size:.85rem; text-align:center; padding:32px; }
+
+  /* Image modal */
+  #modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,.8);
+           z-index:100; align-items:center; justify-content:center; }
+  #modal.open { display:flex; }
+  #modal img  { max-width:90vw; max-height:90vh; border-radius:8px; }
+  #modal .close { position:absolute; top:16px; right:24px; font-size:2rem;
+                  cursor:pointer; color:#fff; }
+
+  .refresh-note { text-align:center; color:#334155; font-size:.75rem; padding-bottom:16px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="dot"></div>
+  <h1>🏭 AssemblyGuard Dashboard</h1>
+  <span id="last-update">Waiting for data…</span>
+</header>
+
+<div class="grid">
+  <div class="card" id="stations-card">
+    <h2>Live Stations</h2>
+    <div id="stations-body"><p style="color:#475569;font-size:.85rem">No stations online yet.</p></div>
+  </div>
+
+  <div class="card">
+    <h2>Recent Anomalies <span id="anomaly-count" style="color:#f87171"></span></h2>
+    <div class="anomaly-list" id="anomaly-list">
+      <p class="no-anomalies">No anomalies recorded.</p>
+    </div>
+  </div>
+</div>
+
+<p class="refresh-note">Auto-refreshes every 3 seconds</p>
+
+<!-- Image modal -->
+<div id="modal">
+  <span class="close" onclick="closeModal()">✕</span>
+  <img id="modal-img" src="" alt="Anomaly frame"/>
+</div>
+
+<script>
+function fmt(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleTimeString();
+}
+
+function stationHTML(s) {
+  const ago   = s.last_seen ? Math.round((Date.now() - new Date(s.last_seen)) / 1000) : 999;
+  const online = ago < 15;
+  const st    = online ? (s.status || "UNKNOWN") : "OFFLINE";
+  const parts = s.part_counts ? Object.entries(s.part_counts)
+    .map(([k,v]) => `${k}: ${v}`).join(", ") : "—";
+  return `
+    <div class="station-name">${s.station_label || s.station_id}</div>
+    <div class="status-badge ${st}">${st}</div>
+    <div class="stat-row"><span>FPS</span><span>${s.fps ?? "—"}</span></div>
+    <div class="stat-row"><span>Parts</span><span>${parts}</span></div>
+    <div class="stat-row"><span>Last seen</span><span>${fmt(s.last_seen)}</span></div>
+  `;
+}
+
+async function refresh() {
+  try {
+    const [statusRes, anomalyRes] = await Promise.all([
+      fetch("/api/status"),
+      fetch("/api/anomalies")
+    ]);
+    const { stations } = await statusRes.json();
+    const anomalies    = await anomalyRes.json();
+
+    // Stations
+    const sb = document.getElementById("stations-body");
+    const keys = Object.keys(stations);
+    sb.innerHTML = keys.length
+      ? keys.map(k => `<div style="margin-bottom:16px">${stationHTML(stations[k])}</div>`).join("")
+      : `<p style="color:#475569;font-size:.85rem">No stations online yet.</p>`;
+
+    // Anomalies
+    const al = document.getElementById("anomaly-list");
+    document.getElementById("anomaly-count").textContent =
+      anomalies.length ? `(${anomalies.length})` : "";
+    al.innerHTML = anomalies.length
+      ? anomalies.map((a, i) => `
+          <div class="anomaly-item" onclick="showImage(${i})">
+            <div class="ai-station">⚠ ${a.station_label || a.station_id}</div>
+            <div class="ai-detail">${(a.details || []).join(" • ")}</div>
+            <div class="ai-time">${fmt(a.timestamp)}  · conf ${((a.confidence||0)*100).toFixed(0)}%</div>
+          </div>`).join("")
+      : `<p class="no-anomalies">No anomalies recorded.</p>`;
+
+    document.getElementById("last-update").textContent =
+      "Updated " + new Date().toLocaleTimeString();
+  } catch(e) {
+    document.getElementById("last-update").textContent = "Connection error";
+  }
+}
+
+async function showImage(idx) {
+  const r = await fetch(`/api/anomalies/${idx}/image`);
+  const { image_b64 } = await r.json();
+  if (!image_b64) return alert("No image saved for this anomaly.");
+  document.getElementById("modal-img").src = "data:image/jpeg;base64," + image_b64;
+  document.getElementById("modal").classList.add("open");
+}
+function closeModal() {
+  document.getElementById("modal").classList.remove("open");
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
